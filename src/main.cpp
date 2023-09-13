@@ -1,408 +1,626 @@
-/*#include <Arduino.h>
-#include <TFT_eSPI.h> 
-TFT_eSPI tft = TFT_eSPI();
-
-void setup() {
-  // put your setup code here, to run once:
-  Serial.begin(115200);
-  Serial.println("Hello");
-  pinMode(LED_BUILTIN, OUTPUT);
-
-  tft.init();
-  tft.setRotation(1);
-  tft.fillScreen(TFT_BLACK);
-  tft.setCursor(0,0,4);
-  tft.setTextColor(TFT_WHITE);
-  tft.println ("Hello World!");
-}
-
-void loop() {
-  digitalWrite(LED_BUILTIN, HIGH);
-  delay(100);
-  digitalWrite(LED_BUILTIN, LOW);
-  delay(100);
-  Serial.println("AAA");
-}*/
+/*#include "main.h"
 
 #include <Arduino.h>
-#include <SPI.h>
-#include <TFT_eSPI.h>
-#include <Wire.h>
 #include "hardware/pio.h"
 #include "quadrature.pio.h"
-
-// Set to tru if you want the calibration to run on each boot
-#define REPEAT_CAL true
-
-// Keypad start position, key sizes and spacing
-#define KEY_W 95 // Key width
-#define KEY_H 95 // Key height
-#define KEY_SPACING_X 20 // X gap
-#define KEY_SPACING_Y 10 // Y gap
-
-#define KEY_X (KEY_W/2) + KEY_SPACING_X // X-axis centre of the first key
-#define KEY_Y (KEY_H/2) + KEY_SPACING_Y // Y-axis centre of the first key
-
-#define KEY_TEXTSIZE 3   // Font size multiplier
-
-// Choose the font you are using
-#define LABEL1_FONT &FreeSansOblique12pt7b // Key label font
-
-// Adding a delay between keypressing to give our OS time to respond
-uint8_t keydelay = 100;
-
-// Create the screen object
-TFT_eSPI tft = TFT_eSPI();
-
-// Creating the labels for the buttons
-// <name>[<number-of-lables>][<number-of-chars-per-label]
-// The number of chars per label should include the termination \0.
-char keyLabel[12][3] = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"};
-
-// Setting the colour for each button
-// You can use the colours defined in TFT_eSPI.h
-uint16_t keyColor[12] = {TFT_BLUE, TFT_RED, TFT_GREEN, TFT_NAVY, 
-                         TFT_MAROON, TFT_MAGENTA, TFT_ORANGE, TFT_SKYBLUE, 
-                         TFT_PURPLE, TFT_CYAN, TFT_PINK, TFT_DARKCYAN
-                        };
-                        
-// Create 12 'keys' to use later
-TFT_eSPI_Button key[12];
-
-void buttonpress(int button);
-void showHelp();
-void showStatus();
-void checkRds();
-
-
-#include <SI4735.h>
-
-#define RESET_PIN 11
-
-#define AM_FUNCTION 1
-#define FM_FUNCTION 0
-
-uint16_t currentFrequency;
-uint16_t previousFrequency;
-uint8_t bandwidthIdx = 0;
-const char *bandwidth[] = {"6", "4", "3", "2", "1", "1.8", "2.5"};
-
 
 PIO pio = pio0;
 uint offset = pio_add_program(pio, &quadratureA_program);
 uint sm = pio_claim_unused_sm(pio, true);
 
 
-SI4735 rx;
-void showFrequency( uint16_t freq ) {
+#include <TFT_eSPI.h> 
+#include "HelveticaMono20pt7b.h"
+#include "HelveticaMono30pt7b.h"
+TFT_eSPI tft = TFT_eSPI();
 
-  if (rx.isCurrentTuneFM())
-  {
-    Serial.print(String(freq / 100.0, 2));
-    Serial.println("MHz ");
-  }
-  else
-  {
-    Serial.print(freq);
-    Serial.println("kHz");
-  }
-  
-}
+#define TFT_TXTBKGDEBUG 0x52AA
+//#define TFT_TXTBKGDEBUG 0x0
+
+
+#include <SI4735.h>
+SI4735 si4735;
+
+//https://pu2clr.github.io/SI4735/extras/apidoc/html/
+
+
+#define AM_FUNCTION 1
+#define FM_FUNCTION 0
+
+typedef struct {
+  const char *freqName;
+  uint16_t   minimumFreq;
+  uint16_t   maximumFreq;
+  uint16_t   currentFreq;
+  uint16_t   currentStep;
+} Band;
+
+
+Band band[] = {{"60m",4700, 5200, 4850, 5},
+  {"49m",5700, 6200, 6000, 5},
+  {"41m",7100, 7600, 7300, 5},
+  {"31m",9300, 10000, 9600, 5},
+  {"25m",11400, 12200, 11940, 5},
+  {"22m",13500, 13900, 13600, 5},
+  {"19m",15000, 15800, 15200, 5},
+  {"16m",17400, 17900, 17600, 5},
+  {"13m",21400, 21800, 21500, 5},
+  {"11m",25600, 27500, 27220, 1}
+};
+
+const int lastBand = (sizeof band / sizeof(Band)) - 1;
+int  currentFreqIdx = 3; // Default SW band is 31M
+
+uint16_t currentFrequency;
+
+
+
+
+enum bandMode {FM, LSB, USB, AM};
+const char *bandModeDesc[] = {"FM ", "LSB", "USB", "AM "};
+
+
+struct MainStatusBarData
+{
+    uint8_t bandMode;
+    uint16_t frequency; //kHz
+    uint8_t rssi;
+    uint8_t snr;
+    bool atc;
+    bool agc;
+    
+} mainStatusBarData;
+
 
 void setup() {
-  //delay(3000);
   pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
   
   Serial.begin(115200);
-  Serial.println("");
-
-  // Initialise the TFT screen
-  tft.init();
-
-  // Set the rotation before we calibrate
-  tft.setRotation(1);
-  
-  // Clear the screen
-  tft.fillScreen(TFT_BLACK);
-
-  // Draw the keys ( 3 times 4 loops to create 12)
-  for (uint8_t row = 0; row < 3; row++) {   // 3 rows
-    for (uint8_t col = 0; col < 4; col++) { // of 4 buttons
-      
-      uint8_t b = col + row * 4; // The button number is the column we are on added to the row we are on 
-                                 // multiplied by the number of buttons per row. C++ uses the Order of operations
-                                 // you are used to so first the row is multiplied by 4 and then the col is added.
-                                 // The first button is 0.
-                                 // Example. col = 2 (third column), row = 1 (second row), becomes: 1 * 4 = 4 --> 4 + 2 = 6. This is the 7th button.
-
-      key[b].initButton(&tft, KEY_X + col * (KEY_W + KEY_SPACING_X),
-                        KEY_Y + row * (KEY_H + KEY_SPACING_Y), // x, y, w, h, outline, fill, text
-                        KEY_W, KEY_H, TFT_WHITE, keyColor[b], TFT_WHITE,
-                        keyLabel[b], KEY_TEXTSIZE);
-      key[b].drawButton();
-    }
-  }
-
-
-  digitalWrite(RESET_PIN, HIGH);
-  
-  Serial.println("AM and FM station tuning test.");
-
-  showHelp();
-
-  // Look for the Si47XX I2C bus address
-  int16_t si4735Addr = rx.getDeviceI2CAddress(RESET_PIN);
-  if ( si4735Addr == 0 ) {
-    Serial.println("Si473X not found!");
-    Serial.flush();
-    while (1);
-  } else {
-    Serial.print("The SI473X / SI474X I2C address is 0x");
-    Serial.println(si4735Addr, HEX);
-  }
-
-
-  delay(500);
-  rx.setup(RESET_PIN, FM_FUNCTION);
-  // rx.setup(RESET_PIN, -1, 1, SI473X_ANALOG_AUDIO);
-  // Starts defaul radio function and band (FM; from 84 to 108 MHz; 103.9 MHz; step 100kHz)
-  rx.setFM(8400, 10800, 10650, 10);
-  delay(500);
-  currentFrequency = previousFrequency = rx.getFrequency();
-  rx.setVolume(45);
-  showStatus();
-
+  Serial.println("\nHello");
 
   pinMode(ENCODER_PIN_A, INPUT_PULLUP);
   pinMode(ENCODER_PIN_B, INPUT_PULLUP);
   quadratureA_program_init(pio, sm, offset, ENCODER_PIN_A, ENCODER_PIN_B);
 
+  displaySetup();
+  radioSetup();
 }
 
 void loop() {
+  displayLoop();
+  radioLoop();
 
-  uint16_t t_x = 0, t_y = 0; // To store the touch coordinates
+  checkEncoder();
+}
 
-  // Pressed will be set true is there is a valid touch on the screen
-  bool pressed = tft.getTouch(&t_x, &t_y);
+void checkEncoder()
+{
+  pio_sm_exec_wait_blocking(pio, sm, pio_encode_in(pio_x, 32));
+  int x = pio_sm_get_blocking(pio, sm);
+  static int lastx = 0;
+  if(lastx != x)
+  {
+    lastx = x;
+    Serial.print("Encoder: ");
+    Serial.println(x);
+  }
+}
+
+
+void displaySetup()
+{
+  tft.init();
+  tft.setRotation(0);
+  tft.fillScreen(TFT_BLACK);
+  tft.setCursor(0,0,4);
+  tft.setTextColor(TFT_WHITE);
+  tft.println ("Hello World!");
+  drawMainStatusBar();
+}
+
+void displayLoop()
+{
+
+}
+
+void drawMainStatusBar()
+{
+  tft.drawRect(0, 0, 320, 100, TFT_WHITE);
+
+  tft.setTextColor(TFT_WHITE, TFT_TXTBKGDEBUG);  tft.setTextSize(1);
+  //tft.unloadFont();  tft.setFreeFont(&HelveticaMono20pt7b);
+  tft.setTextDatum(ML_DATUM);
+  if(si4735.isCurrentTuneFM())
+  {
+    //snprintf(buf, 64, "FM %u MHz", si4735.getFrequency());
+    tft.drawString("FM", 10, 50, 1);
+  }
+  else 
+  {
+    tft.drawString("AM", 10, 50, 1);
+    //snprintf(buf, 64, "?? %u kHz", si4735.getFrequency());
+  }
+  String buf;
+  delay(200);
+  uint16_t freq = si4735.getFrequency();
+  Serial.println ("1");
+  buf = String(freq / 100.0, 2);
+  Serial.println ("2");
+  Serial.println(freq);
+  Serial.println ("3");
+  delay(200);
+    tft.drawString("LKJASFD", 50, 50, 1);
+  Serial.println ("4");
+  tft.unloadFont();
+}
+
+
+
+void radioSetup()
+{
+  Serial.println("Test and validation of the SI4735 Arduino Library.");
+  Serial.println("AM and FM station tuning test.");
+
+
+  // gets and sets the Si47XX I2C bus address.
+  int16_t si4735Addr = si4735.getDeviceI2CAddress(RESET_PIN);
+  if ( si4735Addr == 0 ) {
+    Serial.println("Si473X not found!");
+    Serial.flush();
+    while (1);
+  } else {
+    Serial.print("The Si473X I2C address is 0x");
+    Serial.println(si4735Addr, HEX);
+  }
+
+  showHelp();
+
+  delay(500);
+
+  si4735.setup(RESET_PIN, FM_FUNCTION);
+
+  // Starts defaul radio function and band (FM; from 84 to 108 MHz; 103.9 MHz; step 100kHz)
+  si4735.setFM(6400, 10800,  10390, 10);
+
+  delay(500);
+
+  currentFrequency = si4735.getFrequency();
+  si4735.setVolume(45);
+  showStatusSerial();
+}
+
+void radioLoop()
+{
   
-  // Check if any key coordinate boxes contain the touch coordinates
-  for (uint8_t b = 0; b < 12; b++) {
-    if (pressed && key[b].contains(t_x, t_y)) {
-      key[b].press(true);  // tell the button it is pressed
-    } else {
-      key[b].press(false);  // tell the button it is NOT pressed
-    }
-  }
-
-  // Check if any key has changed state
-  for (uint8_t b = 0; b < 12; b++) {
-
-    if (key[b].justReleased()) key[b].drawButton(); // draw normal again
-
-    if (key[b].justPressed()) 
+  if (Serial.available() > 0)
+  {
+    char key = Serial.read();
+    switch (key)
     {
-      key[b].drawButton(true);  // draw invert (background becomes text colour and text becomes background colour
-      buttonpress(b); // Call the button press function and pass the button number
+      case '+':
+        si4735.volumeUp();
+        break;
+      case '-':
+        si4735.volumeDown();
+        break;
+      case 'a':
+      case 'A':
+        si4735.setAM(570, 1710,  810, 10);
+        si4735.setAvcAmMaxGain(32); // Sets the maximum gain for automatic volume control on AM mode
+        showStatusSerial();
+        break;
+      case 'f':
+      case 'F':
+        si4735.setFM(8600, 10800,  10760, 10);
+        showStatusSerial();
+        break;
+      case '2':
+        if ( currentFreqIdx < lastBand ) {
+          currentFreqIdx++;
+        } else {
+          currentFreqIdx = 0;
+        }
+        si4735.setAM(band[currentFreqIdx].minimumFreq, band[currentFreqIdx].maximumFreq, band[currentFreqIdx].currentFreq, band[currentFreqIdx].currentStep);
+        si4735.setAvcAmMaxGain(48); // Sets the maximum gain for automatic volume control on AM mode
+
+        delay(100);
+        currentFrequency = band[currentFreqIdx].currentFreq;
+        showBandName();
+        showStatusSerial();
+        break;
+      case '1':
+        if ( currentFreqIdx > 0 ) {
+          currentFreqIdx--;
+        } else {
+          currentFreqIdx = lastBand;
+        }
+        si4735.setAM(band[currentFreqIdx].minimumFreq, band[currentFreqIdx].maximumFreq, band[currentFreqIdx].currentFreq, band[currentFreqIdx].currentStep);
+        delay(100);
+        currentFrequency = band[currentFreqIdx].currentFreq;
+        showBandName();
+        showStatusSerial();
+        break;
+      case 'W':
+      case 'w':
+        si4735.setAM(band[currentFreqIdx].minimumFreq, band[currentFreqIdx].maximumFreq, band[currentFreqIdx].currentFreq, band[currentFreqIdx].currentStep);
+        delay(100);
+        currentFrequency = band[currentFreqIdx].currentFreq;
+        showBandName();
+        showStatusSerial();         
+        break;  
+      case 'U':
+      case 'u':
+        si4735.frequencyUp();
+        showStatusSerial();
+        break;
+      case 'D':
+      case 'd':
+        si4735.frequencyDown();
+        showStatusSerial();
+        break;
+      case 'S':
+        si4735.seekStationUp();
+        showStatusSerial();
+        break;
+      case 's':
+        si4735.seekStationDown();
+        showStatusSerial();
+        break;
+      case 'X':
+        showStatusSerial();
+        break;
+      case '?':
+        showHelp();
+        break;
+      default:
+        break;
     }
   }
+}
 
+
+// Instructions
+void showHelp() {
+  Serial.println("Type F to FM; A to MW; and 1 or 2 to SW");
+  Serial.println("Type U to increase and D to decrease the frequency");
+  Serial.println("Type S or s to seek station Up or Down");
+  Serial.println("Type + or - to volume Up or Down");
+  Serial.println("Type X to show current status");
+  Serial.println("Type W to switch to SW");
+  Serial.println("Type 1 to go to the next SW band");
+  Serial.println("Type 2 to go to the previous SW band");
+  Serial.println("Type ? to this help.");
+  Serial.println("==================================================");
+  delay(1000);
+}
+
+// Show current frequency and status
+void showStatusSerial()
+{
+
+  delay(250);
+  band[currentFreqIdx].currentFreq = currentFrequency = si4735.getFrequency();
+
+  Serial.print("You are tuned on ");
+  if (si4735.isCurrentTuneFM() ) {
+    Serial.print(String(currentFrequency / 100.0, 2));
+    Serial.print("MHz ");
+    Serial.print((si4735.getCurrentPilot()) ? "STEREO" : "MONO");
+  } else {
+    Serial.print(currentFrequency);
+    Serial.print("kHz");
+  }
+
+  si4735.getCurrentReceivedSignalQuality();
+  Serial.print(" [SNR:" );
+  Serial.print(si4735.getCurrentSNR());
+  Serial.print("dB");
+
+  Serial.print(" RSSI:" );
+  Serial.print(si4735.getCurrentRSSI());
+  Serial.println("dBuV]");
+
+}
+
+
+void showBandName() {
+  Serial.println("Band: ");
+  Serial.println(band[currentFreqIdx].freqName);
+  Serial.println("*******");  
+}*/
+
+#include "main.h"
+#include <Wire.h>
+#include <SI4735.h>
+
+#include "TFT_eSPI.h"
+#include <RotaryEncoder.h>
+
+TFT_eSPI tft = TFT_eSPI();
+TFT_eSprite spr = TFT_eSprite(&tft);
+
+#define FM_BAND_TYPE 0
+#define MW_BAND_TYPE 1
+#define SW_BAND_TYPE 2
+#define LW_BAND_TYPE 3
+
+
+RotaryEncoder encoder(ENCODER_PIN_A, ENCODER_PIN_B, RotaryEncoder::LatchMode::TWO03);
+
+#define color1 0xC638
+#define color2 0xC638
+
+volatile int encoderCount = 0;
+
+int value = 980;
+int minimal = 880;
+int maximal = 1080;
+int strength = 0;
+
+float freq = 0.00;
+SI4735 radio;
+
+bool muted = 0;
+int deb = 0;
+
+void setup()
+{  
+  Serial.begin(115200);
+  Serial.println("\nHello");
+
+  tft.begin();
+  //tft.writecommand(0x11);
+  tft.setRotation(0);
+  tft.fillScreen(TFT_BLACK);
+
+  Wire.begin();
+  radio.setI2CFastModeCustom(100000);
+  radio.getDeviceI2CAddress(RESET_PIN); // Looks for the I2C bus address and set it.  Returns 0 if error
+  radio.setup(RESET_PIN, MW_BAND_TYPE);
+  delay(200);
+  radio.setTuneFrequencyAntennaCapacitor(0);
+  radio.setFM(6400, 10800, 10390, 10);
+  delay(200);
+  freq = radio.getFrequency() / 100.0;
+
+  radio.setVolume(58);
+
+  spr.createSprite(320, 170);
+  tft.setTextDatum(4);
+  tft.setSwapBytes(true);
+  tft.setFreeFont(&Orbitron_Light_24);
+  tft.setTextColor(color1, TFT_BLACK);
+
+  drawSprite();
+}
+
+void readEncoder()
+{
+
+  static int pos = 0;
+
+  encoderCount = 0;
+
+  encoder.tick();
+
+  if (digitalRead(0) == 0)
+  {
+    if (deb == 0)
+    {
+      deb = 1;
+      muted = !muted;
+      // radio.setAudioMute(muted);
+      drawSprite();
+      //delay(200);
+    }
+  }
+  else
+    deb = 0;
+
+  int newPos = encoder.getPosition();
+  if (pos != newPos)
+  {
+
+    if (newPos > pos)
+    {
+      value = value - 1;
+      encoderCount = -1;
+    }
+    if (newPos < pos)
+    {
+      value = value + 1;
+      encoderCount = 1;
+    }
+
+    pos = newPos;
+
+    drawSprite();
+    showStatusSerial();
+  }
+}
+
+void drawSprite()
+{
+
+  // if(muted==false)
+
+  if (encoderCount == 1)
+    radio.frequencyUp();
+  else if (encoderCount == -1)
+    radio.frequencyDown();
+  
+  freq = radio.getFrequency() / 100.0;
+  value = freq * 10;
+
+  // strength=getStrength();
+
+  //spr.fillSprite(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+
+  tft.drawFloat(freq, 1, 100, 40, 7);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+
+  
+  for (int i = 0; i < strength; i++)
+  {
+    if (i < 9)
+      spr.fillRect(100 + (i * 4), 50 - (i * 1), 2, 4 + (i * 1), TFT_GREEN);
+    else
+      spr.fillRect(100 + (i * 4), 50 - (i * 1), 2, 4 + (i * 1), TFT_RED);
+  }
+  
+  if (radio.getCurrentPilot())
+    tft.drawString("Stereo", 275, 31, 2);
+  else
+    tft.drawString("Mono", 275, 31, 2);
+
+  //spr.drawLine(160, 114, 160, 170, TFT_RED);
+  //spr.pushSprite(0, 170);
+}
+
+int getStrength()
+{
+
+  uint8_t rssi;
+
+  rssi = radio.getCurrentRSSI();
+
+  if ((rssi >= 0) and (rssi <= 1))
+    return 1; // S0
+  if ((rssi > 1) and (rssi <= 1))
+    return 2; // S1
+  if ((rssi > 2) and (rssi <= 3))
+    return  3; // S2
+  if ((rssi > 3) and (rssi <= 4))
+    return  4; // S3
+  if ((rssi > 4) and (rssi <= 10))
+    return  5; // S4
+  if ((rssi > 10) and (rssi <= 16))
+    return 6; // S5
+  if ((rssi > 16) and (rssi <= 22))
+    return 7; // S6
+  if ((rssi > 22) and (rssi <= 28))
+    return  8; // S7
+  if ((rssi > 28) and (rssi <= 34))
+    return 9; // S8
+  if ((rssi > 34) and (rssi <= 44))
+    return 10; // S9
+  if ((rssi > 44) and (rssi <= 54))
+    return 11; // S9 +10
+  if ((rssi > 54) and (rssi <= 64))
+    return 12; // S9 +20
+  if ((rssi > 64) and (rssi <= 74))
+    return 13; // S9 +30
+  if ((rssi > 74) and (rssi <= 84))
+    return 14; // S9 +40
+  if ((rssi > 84) and (rssi <= 94))
+    return 15; // S9 +50
+  if (rssi > 94)
+    return 16; // S9 +60
+  if (rssi > 95)
+    return 17; //>S9 +60
+
+  return 17;
+
+}
+
+void loop()
+{
+  readEncoder();
+  radio.getCurrentReceivedSignalQuality();
+  strength = getStrength();
 
   if (Serial.available() > 0)
   {
     char key = Serial.read();
     switch (key)
     {
-    case '+':
-      rx.volumeUp();
-      break;
-    case '-':
-      rx.volumeDown();
-      break;
-    case 'a':
-    case 'A':
-      rx.setAM(520, 1750, 810, 10);
-      rx.setAvcAmMaxGain(48); // Sets the maximum gain for automatic volume control on AM mode.
-      rx.setSeekAmLimits(520, 1750);
-      rx.setSeekAmSpacing(10); // spacing 10kHz
-      break;
-    case 'f':
-    case 'F':
-      rx.setFM(8600, 10800, 10390, 50);
-      rx.setSeekAmRssiThreshold(0);
-      rx.setSeekAmSNRThreshold(10);
-      break;
-    case '1':
-      rx.setAM(100, 30000, 7200, 5);
-      rx.setSeekAmLimits(100, 30000);   // Range for seeking.
-      rx.setSeekAmSpacing(1); // spacing 1kHz
-      Serial.println("\nALL - LW/MW/SW");
-      break;
-    case 'U':
-    case 'u':
-      rx.frequencyUp();
-      break;
-    case 'D':
-    case 'd':
-      rx.frequencyDown();
-      break;
-    case 'b':
-    case 'B':
-      if (rx.isCurrentTuneFM())
-      {
-        Serial.println("Not valid for FM");
-      }
-      else
-      {
-        if (bandwidthIdx > 6)
-          bandwidthIdx = 0;
-        rx.setBandwidth(bandwidthIdx, 1);
-        Serial.print("Filter - Bandwidth: ");
-        Serial.print(String(bandwidth[bandwidthIdx]));
-        Serial.println(" kHz");
-        bandwidthIdx++;
-      }
-      break;
-    case 'S':
-      rx.seekStationProgress(showFrequency,1);
-      // rx.seekStationUp();
-      break;
-    case 's':
-      rx.seekStationProgress(showFrequency,0);
-      // rx.seekStationDown();
-      break;
-    case '0':
-      showStatus();
-      break;
-    case '4':
-      rx.setFrequencyStep(1);
-      Serial.println("\nStep 1");
-      break;  
-    case '5':
-      rx.setFrequencyStep(5);
-      Serial.println("\nStep 5");
-      break;    
-    case '6':
-      rx.setFrequencyStep(10);
-      Serial.println("\nStep 10");
-      break;
-    case '7':
-      rx.setFrequencyStep(100);
-      Serial.println("\nStep 100");      
-      break;
-    case '8':
-      rx.setFrequencyStep(1000);
-      Serial.println("\nStep 1000");    
-      break;
-    case '?':
-      showHelp();
-      break;
-    default:
-      break;
+      case '+':
+        radio.volumeUp();
+        break;
+      case '-':
+        radio.volumeDown();
+        break;
+      case 'a':
+      case 'A':
+        radio.setAM(570, 1710,  810, 10);
+        radio.setAvcAmMaxGain(32); // Sets the maximum gain for automatic volume control on AM mode
+        break;
+      case 'f':
+      case 'F':
+        radio.setFM(8600, 10800,  10760, 10);
+        break;
+      case 'U':
+      case 'u':
+        radio.frequencyUp();
+        showStatusSerial();
+        break;
+      case 'D':
+      case 'd':
+        radio.frequencyDown();
+        showStatusSerial();
+        break;
+      case 'S':
+        radio.seekStationUp();
+        showStatusSerial();
+        break;
+      case 's':
+        radio.seekStationDown();
+        showStatusSerial();
+        break;
+      case 'X':
+        showStatusSerial();
+        break;
+      case '?':
+        showHelp();
+        break;
+      default:
+        break;
     }
   }
-  delay(100);
-  currentFrequency = rx.getCurrentFrequency();
-  if (currentFrequency != previousFrequency)
-  {
-    previousFrequency = currentFrequency;
-    showStatus();
-    delay(300);
-  }
-  digitalWrite(LED_BUILTIN, HIGH);
-
-  pio_sm_exec_wait_blocking(pio, sm, pio_encode_in(pio_x, 32));
-  int x = pio_sm_get_blocking(pio, sm);
-  Serial.print("Encoder: ");
-  Serial.println(x);
+  delay(5);
 }
 
-void buttonpress(int button)
-{
-  //Handle a button press. Buttons are 0 indexed, meaning that the first button is button 0.
-  switch(button){
-    case 0:
-     // Sending a combination of CTRL, ALT and a Function key.
-     Serial.println("Button 1 pressed");
-     break;
-    case 1:
-     // Sending a combination of CTRL, ALT and a Function key.
-     Serial.println("Button 2 pressed");
-     break;
-    case 2:
-     // Sending a combination of CTRL, ALT and a Function key.
-     Serial.println("Button 3 pressed");
-     break;
-    case 3:
-     Serial.println("Button 4 pressed");
-     break;
-    case 4:
-     Serial.println("Button 5 pressed");
-     break;
-    case 5:
-     Serial.println("Button 6 pressed");
-     break;
-    case 6:
-     Serial.println("Button 7 pressed");
-     break;
-    case 7:
-     Serial.println("Button 8 pressed");
-     break;
-    case 8:
-     Serial.println("Button 9 pressed");
-     break;
-    case 9:
-     Serial.println("Button 10 pressed");
-     // Nothing for now
-     break;
-    case 10:
-     Serial.println("Button 11 pressed");
-     // Nothing for now
-     break;
-    case 11:
-     Serial.println("Button 12 pressed");
-     // Nothing for now
-     break;
-  }
-}
-
-void showHelp()
-{
-  Serial.println("The SI473X / SI474X I2C circuit test");
-  Serial.println("Type F to FM; A to MW; 1 to All Band (100kHz to 30MHz)");
+// Instructions
+void showHelp() {
+  Serial.println("Type F to FM; A to MW; and 1 or 2 to SW");
   Serial.println("Type U to increase and D to decrease the frequency");
   Serial.println("Type S or s to seek station Up or Down");
   Serial.println("Type + or - to volume Up or Down");
-  Serial.println("Type 0 to show current status");
-  Serial.println("Type B to change Bandwidth filter");
-  Serial.println("Type 4 to 8 (4 to step 1; 5 to step 5kHz; 6 to 10kHz; 7 to 100kHz; 8 to 1000kHz)");
+  Serial.println("Type X to show current status");
+  Serial.println("Type W to switch to SW");
+  Serial.println("Type 1 to go to the next SW band");
+  Serial.println("Type 2 to go to the previous SW band");
   Serial.println("Type ? to this help.");
   Serial.println("==================================================");
-  delay(1000);
+  //delay(1000);
 }
 
-void showStatus()
+// Show current frequency and status
+void showStatusSerial()
 {
-  // rx.getStatus();
-  previousFrequency = currentFrequency = rx.getFrequency();
-  rx.getCurrentReceivedSignalQuality();
+
+  //delay(250);
+  uint16_t currentFrequency = radio.getFrequency();
+
   Serial.print("You are tuned on ");
-  if (rx.isCurrentTuneFM())
-  {
+  if (radio.isCurrentTuneFM() ) {
     Serial.print(String(currentFrequency / 100.0, 2));
     Serial.print("MHz ");
-    Serial.print((rx.getCurrentPilot()) ? "STEREO" : "MONO");
-  }
-  else
-  {
+    Serial.print((radio.getCurrentPilot()) ? "STEREO" : "MONO");
+  } else {
     Serial.print(currentFrequency);
     Serial.print("kHz");
   }
-  Serial.print(" [SNR:");
-  Serial.print(rx.getCurrentSNR());
+
+  radio.getCurrentReceivedSignalQuality();
+  Serial.print(" [SNR:" );
+  Serial.print(radio.getCurrentSNR());
   Serial.print("dB");
 
-  Serial.print(" Signal:");
-  Serial.print(rx.getCurrentRSSI());
+  Serial.print(" RSSI:" );
+  Serial.print(radio.getCurrentRSSI());
   Serial.println("dBuV]");
+
 }
