@@ -341,6 +341,15 @@ TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite mainDataPanel = TFT_eSprite(&tft);
 TFT_eSprite secondaryDataPanel = TFT_eSprite(&tft);
 
+TFT_eSprite ScrollTextSprite = TFT_eSprite(&tft);
+
+int ScrollStepCounter = 0;
+int ScrollStep = -3; // Must be negative for scrolling from right to left. Use a more neg. number for faster scrolling, but jumpier.
+int16_t MsgPixWidth; // The width of your entire message to be scrolled, in pixels.
+char MessageToScroll[65] = "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW";
+int SpaceBetweenRepeats = 50; // in pixels.
+int TopPadding = 10; // to keep the letters from touching the top edge of banner.
+
 #define FM_BAND_TYPE 0
 #define MW_BAND_TYPE 1
 #define SW_BAND_TYPE 2
@@ -370,9 +379,9 @@ void setup()
   Serial.println("\nHello");
 
   setupRadio();
-
   setupScreen();
   drawMainDataPanel();
+
 }
 
 void setupRadio()
@@ -394,7 +403,6 @@ void setupRadio()
 void setupScreen()
 {
   tft.begin();
-  //tft.writecommand(0x11);
   tft.setRotation(0);
   tft.fillScreen(TFT_BLACK);
   
@@ -410,15 +418,32 @@ void setupScreen()
   tft.drawString("ABCI4 ", 1, 300, 4);
   tft.drawString("ABCI6 ", 1, 350, 6);
   tft.drawString("ABCI8 ", 1, 400, 8);
-}
 
+  MsgPixWidth = tft.textWidth(MessageToScroll);
+  ScrollTextSprite.setColorDepth(8); // How big a sprite you can use and how fast it moves is greatly influenced by the color depth.
+  ScrollTextSprite.createSprite(MsgPixWidth + tft.width(), (tft.fontHeight() + TopPadding)); // Sprite width is display plus the space to allow text to scroll from the right.
+  ScrollTextSprite.setTextColor(TFT_YELLOW, TFT_BLACK); // Yellow text, black background
+  
+  // Draw it for the first time:
+  ScrollTextSprite.drawString(MessageToScroll, tft.width(), TopPadding, 4); // 
+  ScrollStepCounter = (MsgPixWidth / abs(ScrollStep)) + SpaceBetweenRepeats;
+}
 
 void loop()
 {
   handleEncoder();
   handleRadio();
   handleScreen();
-  
+
+  ScrollStepCounter--; 
+  if (ScrollStepCounter <= 0)
+  {
+    ScrollTextSprite.fillSprite(TFT_BLACK);
+    ScrollStepCounter = (MsgPixWidth / abs(ScrollStep)) + SpaceBetweenRepeats;
+    MsgPixWidth = ScrollTextSprite.drawString(fmData.programInfo, tft.width(),TopPadding, 4);
+  }
+  ScrollTextSprite.scroll(ScrollStep);
+  ScrollTextSprite.pushSprite(0, 300);
 
   if (Serial.available() > 0)
   {
@@ -468,7 +493,6 @@ void loop()
         break;
     }
   }
-  //delay(5);
 }
 
 unsigned long nextRadioDataUpdate = 0;
@@ -500,37 +524,40 @@ void handleRadio()
   }
 
   if(mainData.currentRadioMode == 0){
-
-    char *rdsTime;
+    
+    /*char *rdsTime;
     char *stationName;
     char *programInfo;
     char *stationInfo;
-
     
-    fmData.rdsAvailable = radio.getRdsAllData(&fmData.stationNamePtr, &fmData.stationInfoPtr, &fmData.programInfoPtr, &fmData.rdsTimePtr);
-
-
-    /*radio.getRdsAllData(&stationName, &stationInfo, &programInfo, &rdsTime);
+    radio.getRdsAllData(&stationName, &stationInfo, &programInfo, &rdsTime);
     if (rdsTime != NULL) {
       //Serial.println(rdsTime);
       //strncpy(fmData.rdsTime, rdsTime, 32);
+      strncpy(fmData.rdsTime, rdsTime, 25);
     }
 
     if (stationName != NULL) {
       //Serial.println(stationName);
       //strncpy(fmData.stationName, stationName, 255);
+      strncpy(fmData.stationName, stationName, 9);
     }
     
     if (programInfo != NULL) {
       //Serial.println(programInfo);
       //strncpy(fmData.programInfo, programInfo, 255);
+      strncpy(fmData.programInfo, programInfo, 65);
     }
     
     if (stationInfo != NULL) {
       //Serial.println(stationInfo);
       //strncpy(fmData.stationInfo, stationInfo, 255);
+      strncpy(fmData.stationInfo, stationInfo, 33);
     }*/
 
+
+    
+    fmData.rdsAvailable = radio.getRdsAllData(&fmData.stationNamePtr, &fmData.stationInfoPtr, &fmData.programInfoPtr, &fmData.rdsTimePtr);
 
   }
 }
@@ -541,7 +568,7 @@ void handleScreen()
 {
   uint8_t crcMain = 0;
   uint8_t *p = (uint8_t *)&mainData;
-  for(int i = 0; i < sizeof(mainData); i++) {
+  for(uint16_t i = 0; i < sizeof(mainData); i++) {
     crcMain ^= p[i];
   }
   
@@ -550,7 +577,7 @@ void handleScreen()
     drawMainDataPanel();
   }
 
-  /*if(mainData.currentRadioMode == 0) {
+  if(mainData.currentRadioMode == 0) {
     
     uint8_t crcSecondary = 0;
     uint8_t *p = (uint8_t *)&fmData;
@@ -562,13 +589,13 @@ void handleScreen()
       lastCrcSecondary = crcSecondary;
       drawSecondaryDataPanelFM();
     }
-  }*/
+  }
       //drawSecondaryDataPanelFM();
 
-  if (millis() > nextSecondaryDataPanelUpdate) {
+  /*if (millis() > nextSecondaryDataPanelUpdate) {
     nextSecondaryDataPanelUpdate = millis() + 500;
     drawSecondaryDataPanelFM();
-  }
+  }*/
 }
 
 void drawMainDataPanel()
@@ -670,7 +697,6 @@ void handleEncoder()
   encoder.tick();
 
   //encoder.getMillisBetweenRotations();
-  static int pos = 0;
   static int deb = 0;
 
   if (digitalRead(ENCODER_PUSH_BUTTON) == 0)
