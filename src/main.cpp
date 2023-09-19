@@ -1,347 +1,28 @@
-/*#include "main.h"
-
-#include <Arduino.h>
-#include "hardware/pio.h"
-#include "quadrature.pio.h"
-
-PIO pio = pio0;
-uint offset = pio_add_program(pio, &quadratureA_program);
-uint sm = pio_claim_unused_sm(pio, true);
-
-
-#include <TFT_eSPI.h> 
-#include "HelveticaMono20pt7b.h"
-#include "HelveticaMono30pt7b.h"
-TFT_eSPI tft = TFT_eSPI();
-
-#define TFT_TXTBKGDEBUG 0x52AA
-//#define TFT_TXTBKGDEBUG 0x0
-
-
-#include <SI4735.h>
-SI4735 si4735;
-
-//https://pu2clr.github.io/SI4735/extras/apidoc/html/
-
-
-#define AM_FUNCTION 1
-#define FM_FUNCTION 0
-
-typedef struct {
-  const char *freqName;
-  uint16_t   minimumFreq;
-  uint16_t   maximumFreq;
-  uint16_t   currentFreq;
-  uint16_t   currentStep;
-} Band;
-
-
-Band band[] = {{"60m",4700, 5200, 4850, 5},
-  {"49m",5700, 6200, 6000, 5},
-  {"41m",7100, 7600, 7300, 5},
-  {"31m",9300, 10000, 9600, 5},
-  {"25m",11400, 12200, 11940, 5},
-  {"22m",13500, 13900, 13600, 5},
-  {"19m",15000, 15800, 15200, 5},
-  {"16m",17400, 17900, 17600, 5},
-  {"13m",21400, 21800, 21500, 5},
-  {"11m",25600, 27500, 27220, 1}
-};
-
-const int lastBand = (sizeof band / sizeof(Band)) - 1;
-int  currentFreqIdx = 3; // Default SW band is 31M
-
-uint16_t currentFrequency;
-
-
-
-
-enum bandMode {FM, LSB, USB, AM};
-const char *bandModeDesc[] = {"FM ", "LSB", "USB", "AM "};
-
-
-struct MainStatusBarData
-{
-    uint8_t bandMode;
-    uint16_t frequency; //kHz
-    uint8_t rssi;
-    uint8_t snr;
-    bool atc;
-    bool agc;
-    
-} mainStatusBarData;
-
-
-void setup() {
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, HIGH);
-  
-  Serial.begin(115200);
-  Serial.println("\nHello");
-
-  pinMode(ENCODER_PIN_A, INPUT_PULLUP);
-  pinMode(ENCODER_PIN_B, INPUT_PULLUP);
-  quadratureA_program_init(pio, sm, offset, ENCODER_PIN_A, ENCODER_PIN_B);
-
-  displaySetup();
-  radioSetup();
-}
-
-void loop() {
-  displayLoop();
-  radioLoop();
-
-  checkEncoder();
-}
-
-void checkEncoder()
-{
-  pio_sm_exec_wait_blocking(pio, sm, pio_encode_in(pio_x, 32));
-  int x = pio_sm_get_blocking(pio, sm);
-  static int lastx = 0;
-  if(lastx != x)
-  {
-    lastx = x;
-    Serial.print("Encoder: ");
-    Serial.println(x);
-  }
-}
-
-
-void displaySetup()
-{
-  tft.init();
-  tft.setRotation(0);
-  tft.fillScreen(TFT_BLACK);
-  tft.setCursor(0,0,4);
-  tft.setTextColor(TFT_WHITE);
-  tft.println ("Hello World!");
-  drawMainStatusBar();
-}
-
-void displayLoop()
-{
-
-}
-
-void drawMainStatusBar()
-{
-  tft.drawRect(0, 0, 320, 100, TFT_WHITE);
-
-  tft.setTextColor(TFT_WHITE, TFT_TXTBKGDEBUG);  tft.setTextSize(1);
-  //tft.unloadFont();  tft.setFreeFont(&HelveticaMono20pt7b);
-  tft.setTextDatum(ML_DATUM);
-  if(si4735.isCurrentTuneFM())
-  {
-    //snprintf(buf, 64, "FM %u MHz", si4735.getFrequency());
-    tft.drawString("FM", 10, 50, 1);
-  }
-  else 
-  {
-    tft.drawString("AM", 10, 50, 1);
-    //snprintf(buf, 64, "?? %u kHz", si4735.getFrequency());
-  }
-  String buf;
-  delay(200);
-  uint16_t freq = si4735.getFrequency();
-  Serial.println ("1");
-  buf = String(freq / 100.0, 2);
-  Serial.println ("2");
-  Serial.println(freq);
-  Serial.println ("3");
-  delay(200);
-    tft.drawString("LKJASFD", 50, 50, 1);
-  Serial.println ("4");
-  tft.unloadFont();
-}
-
-
-
-void radioSetup()
-{
-  Serial.println("Test and validation of the SI4735 Arduino Library.");
-  Serial.println("AM and FM station tuning test.");
-
-
-  // gets and sets the Si47XX I2C bus address.
-  int16_t si4735Addr = si4735.getDeviceI2CAddress(RESET_PIN);
-  if ( si4735Addr == 0 ) {
-    Serial.println("Si473X not found!");
-    Serial.flush();
-    while (1);
-  } else {
-    Serial.print("The Si473X I2C address is 0x");
-    Serial.println(si4735Addr, HEX);
-  }
-
-  showHelp();
-
-  delay(500);
-
-  si4735.setup(RESET_PIN, FM_FUNCTION);
-
-  // Starts defaul radio function and band (FM; from 84 to 108 MHz; 103.9 MHz; step 100kHz)
-  si4735.setFM(6400, 10800,  10390, 10);
-
-  delay(500);
-
-  currentFrequency = si4735.getFrequency();
-  si4735.setVolume(45);
-  showStatusSerial();
-}
-
-void radioLoop()
-{
-  
-  if (Serial.available() > 0)
-  {
-    char key = Serial.read();
-    switch (key)
-    {
-      case '+':
-        si4735.volumeUp();
-        break;
-      case '-':
-        si4735.volumeDown();
-        break;
-      case 'a':
-      case 'A':
-        si4735.setAM(570, 1710,  810, 10);
-        si4735.setAvcAmMaxGain(32); // Sets the maximum gain for automatic volume control on AM mode
-        showStatusSerial();
-        break;
-      case 'f':
-      case 'F':
-        si4735.setFM(8600, 10800,  10760, 10);
-        showStatusSerial();
-        break;
-      case '2':
-        if ( currentFreqIdx < lastBand ) {
-          currentFreqIdx++;
-        } else {
-          currentFreqIdx = 0;
-        }
-        si4735.setAM(band[currentFreqIdx].minimumFreq, band[currentFreqIdx].maximumFreq, band[currentFreqIdx].currentFreq, band[currentFreqIdx].currentStep);
-        si4735.setAvcAmMaxGain(48); // Sets the maximum gain for automatic volume control on AM mode
-
-        delay(100);
-        currentFrequency = band[currentFreqIdx].currentFreq;
-        showBandName();
-        showStatusSerial();
-        break;
-      case '1':
-        if ( currentFreqIdx > 0 ) {
-          currentFreqIdx--;
-        } else {
-          currentFreqIdx = lastBand;
-        }
-        si4735.setAM(band[currentFreqIdx].minimumFreq, band[currentFreqIdx].maximumFreq, band[currentFreqIdx].currentFreq, band[currentFreqIdx].currentStep);
-        delay(100);
-        currentFrequency = band[currentFreqIdx].currentFreq;
-        showBandName();
-        showStatusSerial();
-        break;
-      case 'W':
-      case 'w':
-        si4735.setAM(band[currentFreqIdx].minimumFreq, band[currentFreqIdx].maximumFreq, band[currentFreqIdx].currentFreq, band[currentFreqIdx].currentStep);
-        delay(100);
-        currentFrequency = band[currentFreqIdx].currentFreq;
-        showBandName();
-        showStatusSerial();         
-        break;  
-      case 'U':
-      case 'u':
-        si4735.frequencyUp();
-        showStatusSerial();
-        break;
-      case 'D':
-      case 'd':
-        si4735.frequencyDown();
-        showStatusSerial();
-        break;
-      case 'S':
-        si4735.seekStationUp();
-        showStatusSerial();
-        break;
-      case 's':
-        si4735.seekStationDown();
-        showStatusSerial();
-        break;
-      case 'X':
-        showStatusSerial();
-        break;
-      case '?':
-        showHelp();
-        break;
-      default:
-        break;
-    }
-  }
-}
-
-
-// Instructions
-void showHelp() {
-  Serial.println("Type F to FM; A to MW; and 1 or 2 to SW");
-  Serial.println("Type U to increase and D to decrease the frequency");
-  Serial.println("Type S or s to seek station Up or Down");
-  Serial.println("Type + or - to volume Up or Down");
-  Serial.println("Type X to show current status");
-  Serial.println("Type W to switch to SW");
-  Serial.println("Type 1 to go to the next SW band");
-  Serial.println("Type 2 to go to the previous SW band");
-  Serial.println("Type ? to this help.");
-  Serial.println("==================================================");
-  delay(1000);
-}
-
-// Show current frequency and status
-void showStatusSerial()
-{
-
-  delay(250);
-  band[currentFreqIdx].currentFreq = currentFrequency = si4735.getFrequency();
-
-  Serial.print("You are tuned on ");
-  if (si4735.isCurrentTuneFM() ) {
-    Serial.print(String(currentFrequency / 100.0, 2));
-    Serial.print("MHz ");
-    Serial.print((si4735.getCurrentPilot()) ? "STEREO" : "MONO");
-  } else {
-    Serial.print(currentFrequency);
-    Serial.print("kHz");
-  }
-
-  si4735.getCurrentReceivedSignalQuality();
-  Serial.print(" [SNR:" );
-  Serial.print(si4735.getCurrentSNR());
-  Serial.print("dB");
-
-  Serial.print(" RSSI:" );
-  Serial.print(si4735.getCurrentRSSI());
-  Serial.println("dBuV]");
-
-}
-
-
-void showBandName() {
-  Serial.println("Band: ");
-  Serial.println(band[currentFreqIdx].freqName);
-  Serial.println("*******");  
-}*/
-
 #include "main.h"
 #include <Wire.h>
 #include <SI4735.h>
 
 #include "TFT_eSPI.h"
 #include <RotaryEncoder.h>
+#include <TFT_eWidget.h>
+
+//#define MY_BACKGROUND 0x52AA
+#define MY_BACKGROUND TFT_BLACK
 
 TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite mainDataPanel = TFT_eSprite(&tft);
 TFT_eSprite secondaryDataPanel = TFT_eSprite(&tft);
 
 TFT_eSprite ScrollTextSprite = TFT_eSprite(&tft);
+
+ButtonWidget buttonVolumeDown = ButtonWidget(&tft);
+ButtonWidget buttonVolumeUp = ButtonWidget(&tft);
+
+ButtonWidget* buttonList[] = {&buttonVolumeDown , &buttonVolumeUp};
+uint8_t buttonCount = sizeof(buttonList) / sizeof(buttonList[0]);
+
+#define BUTTON_W 100
+#define BUTTON_H 50
 
 int ScrollStepCounter = 0;
 int ScrollStep = -3; // Must be negative for scrolling from right to left. Use a more neg. number for faster scrolling, but jumpier.
@@ -380,8 +61,9 @@ void setup()
 
   setupRadio();
   setupScreen();
-  drawMainDataPanel();
+  initButtons();
 
+  drawMainDataPanel();
 }
 
 void setupRadio()
@@ -406,11 +88,17 @@ void setupScreen()
   tft.setRotation(0);
   tft.fillScreen(TFT_BLACK);
   
+  //touch_calibrate();
+  uint16_t calData[5] = { 204, 3649, 112, 3823, 4 };
+  tft.setTouch(calData);
+
+  
   mainDataPanel.createSprite(320, 100);
   secondaryDataPanel.createSprite(320, 100);
   tft.setTextDatum(TL_DATUM);
   tft.setSwapBytes(true);
   tft.setFreeFont(&Orbitron_Light_24);
+  
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   
   tft.drawString("ABCI1 ", 1, 200, 1);
@@ -419,14 +107,35 @@ void setupScreen()
   tft.drawString("ABCI6 ", 1, 350, 6);
   tft.drawString("ABCI8 ", 1, 400, 8);
 
-  MsgPixWidth = tft.textWidth(MessageToScroll);
+  /*MsgPixWidth = tft.textWidth(MessageToScroll);
   ScrollTextSprite.setColorDepth(8); // How big a sprite you can use and how fast it moves is greatly influenced by the color depth.
   ScrollTextSprite.createSprite(MsgPixWidth + tft.width(), (tft.fontHeight() + TopPadding)); // Sprite width is display plus the space to allow text to scroll from the right.
   ScrollTextSprite.setTextColor(TFT_YELLOW, TFT_BLACK); // Yellow text, black background
   
   // Draw it for the first time:
   ScrollTextSprite.drawString(MessageToScroll, tft.width(), TopPadding, 4); // 
-  ScrollStepCounter = (MsgPixWidth / abs(ScrollStep)) + SpaceBetweenRepeats;
+  ScrollStepCounter = (MsgPixWidth / abs(ScrollStep)) + SpaceBetweenRepeats;*/
+
+}
+
+void initButtons() {
+  uint16_t x = (tft.width() - BUTTON_W) / 2;
+  uint16_t y = tft.height() / 2 - BUTTON_H + 30;
+
+  buttonVolumeDown.initButtonUL(x, y, BUTTON_W, BUTTON_H, TFT_WHITE, TFT_RED, TFT_BLACK, "Vol-", 1);
+  buttonVolumeDown.setPressAction(buttonVolumeDownPressAction);
+  buttonVolumeDown.setReleaseAction(buttonVolumeDownReleaseAction);
+  //buttonVolumeDown.drawSmoothButton(false, 1, TFT_BLACK); // 3 is outline width, TFT_BLACK is the surrounding background colour for anti-aliasing
+
+  y = tft.height() / 2 + 50;
+  buttonVolumeUp.initButtonUL(x, y, BUTTON_W, BUTTON_H, TFT_WHITE, TFT_GREEN, TFT_BLACK, "Vol+", 1);
+  buttonVolumeUp.setPressAction(buttonVolumeUpPressAction);
+  buttonVolumeUp.setReleaseAction(buttonVolumeUpReleaseAction);
+  //buttonVolumeUp.drawSmoothButton(false, 1, TFT_BLACK); // 3 is outline width, TFT_BLACK is the surrounding background colour for anti-aliasing
+
+  for (uint8_t b = 0; b < buttonCount; b++) {
+    buttonList[b]->drawSmoothButton(false, 1, TFT_BLACK);
+  }
 }
 
 void loop()
@@ -434,8 +143,20 @@ void loop()
   handleEncoder();
   handleRadio();
   handleScreen();
+  handleButtons();
 
-  ScrollStepCounter--; 
+  uint16_t x = 0, y = 0; // To store the touch coordinates
+
+  bool pressed = tft.getTouch(&x, &y);
+  if (pressed) {
+    tft.fillCircle(x, y, 2, TFT_WHITE);
+    Serial.print("x,y = ");
+    Serial.print(x);
+    Serial.print(",");
+    Serial.println(y);
+  }
+
+  /*ScrollStepCounter--; 
   if (ScrollStepCounter <= 0)
   {
     ScrollTextSprite.fillSprite(TFT_BLACK);
@@ -443,7 +164,7 @@ void loop()
     MsgPixWidth = ScrollTextSprite.drawString(fmData.programInfo, tft.width(),TopPadding, 4);
   }
   ScrollTextSprite.scroll(ScrollStep);
-  ScrollTextSprite.pushSprite(0, 300);
+  ScrollTextSprite.pushSprite(0, 300);*/
 
   if (Serial.available() > 0)
   {
@@ -562,10 +283,11 @@ void handleRadio()
   }
 }
 
-unsigned long nextSecondaryDataPanelUpdate = 0;
-uint8_t lastCrcMain = 0, lastCrcSecondary = 0;
 void handleScreen()
 {
+  static unsigned long nextSecondaryDataPanelUpdate = 0;
+  static uint8_t lastCrcMain = 0, lastCrcSecondary = 0;
+
   uint8_t crcMain = 0;
   uint8_t *p = (uint8_t *)&mainData;
   for(uint16_t i = 0; i < sizeof(mainData); i++) {
@@ -604,7 +326,7 @@ void drawMainDataPanel()
   mainDataPanel.drawRect(0, 0, 320, 100, TFT_WHITE);
   
   //mainDataPanel.setTextColor(TFT_WHITE, TFT_BLACK);
-  mainDataPanel.setTextColor(TFT_WHITE, 0x52AA);
+  mainDataPanel.setTextColor(TFT_WHITE, MY_BACKGROUND);
   
   mainDataPanel.drawString(radioModes[mainData.currentRadioMode], 1, 1, 4);
   mainDataPanel.drawFloat(mainData.freq/100.0, 1, 50, 1, 7);
@@ -617,22 +339,22 @@ void drawMainDataPanel()
   mainDataPanel.drawString(buf, 270, 20, 2);
 
   sprintf(buf, "RSSI: %u dBuV", mainData.rssi.value);
-  if(mainData.rssi.isLow) mainDataPanel.setTextColor(TFT_RED, 0x52AA);
-  if(mainData.rssi.isHigh) mainDataPanel.setTextColor(TFT_GREEN, 0x52AA);
+  if(mainData.rssi.isLow) mainDataPanel.setTextColor(TFT_RED, MY_BACKGROUND);
+  if(mainData.rssi.isHigh) mainDataPanel.setTextColor(TFT_GREEN, MY_BACKGROUND);
   mainDataPanel.drawString(buf, 1, 50, 2);
-  mainDataPanel.setTextColor(TFT_WHITE, 0x52AA);
+  mainDataPanel.setTextColor(TFT_WHITE, MY_BACKGROUND);
 
   sprintf(buf, "SNR: %u dB", mainData.snr.value);
-  if(mainData.snr.isLow) mainDataPanel.setTextColor(TFT_RED, 0x52AA);
-  if(mainData.snr.isHigh) mainDataPanel.setTextColor(TFT_GREEN, 0x52AA);
+  if(mainData.snr.isLow) mainDataPanel.setTextColor(TFT_RED, MY_BACKGROUND);
+  if(mainData.snr.isHigh) mainDataPanel.setTextColor(TFT_GREEN, MY_BACKGROUND);
   mainDataPanel.drawString(buf, 100, 50, 2);
-  mainDataPanel.setTextColor(TFT_WHITE, 0x52AA);
+  mainDataPanel.setTextColor(TFT_WHITE, MY_BACKGROUND);
 
   sprintf(buf, "MULT: %u%%", mainData.multipath.value);
-  if(mainData.multipath.isLow) mainDataPanel.setTextColor(TFT_RED, 0x52AA);
-  if(mainData.multipath.isHigh) mainDataPanel.setTextColor(TFT_GREEN, 0x52AA);
+  if(mainData.multipath.isLow) mainDataPanel.setTextColor(TFT_RED, MY_BACKGROUND);
+  if(mainData.multipath.isHigh) mainDataPanel.setTextColor(TFT_GREEN, MY_BACKGROUND);
   mainDataPanel.drawString(buf, 200, 50, 2);
-  mainDataPanel.setTextColor(TFT_WHITE, 0x52AA);
+  mainDataPanel.setTextColor(TFT_WHITE, MY_BACKGROUND);
   
   if(mainData.agc) mainDataPanel.drawString("AGC", 280, 50, 2);
 
@@ -665,29 +387,42 @@ void drawSecondaryDataPanelFM()
   secondaryDataPanel.drawRect(0, 0, 320, 100, TFT_WHITE);
 
   //mainDataPanel.setTextColor(TFT_WHITE, TFT_BLACK);
-  mainDataPanel.setTextColor(TFT_WHITE, 0x52AA);
-  tft.setFreeFont(&Orbitron_Light_24);
+  mainDataPanel.setTextColor(TFT_WHITE, MY_BACKGROUND);
+  //tft.setFreeFont(&Orbitron_Light_24);
   if(fmData.rdsAvailable) secondaryDataPanel.drawString("RDS", 150, 1, 4);
 
-  if (fmData.stationNamePtr != NULL) {
-    strncpy(fmData.stationName, fmData.stationNamePtr, 9);
-  }
-  
-  if (fmData.programInfoPtr != NULL) {
-    strncpy(fmData.programInfo, fmData.programInfoPtr, 65);
-    //secondaryDataPanel.drawString(fmData.programInfo, 2, 30, 4);
-  }
+  if (fmData.rdsTimePtr != NULL) strncpy(fmData.rdsTime, fmData.rdsTimePtr, 25);
+  if (fmData.stationNamePtr != NULL) strncpy(fmData.stationName, fmData.stationNamePtr, 9);  
+  if (fmData.programInfoPtr != NULL)
+  {
+    strncpy(fmData.programInfo, fmData.programInfoPtr, 65);  
+    
+    #define toFind 13 //CR character is transmitted at the end of RDS text
+    char * pch;
+    pch = strchr (fmData.programInfo, toFind);
+    if (pch != NULL) {
+      uint8_t i = pch - fmData.programInfo;
+      if (i < 62) {
+        fmData.programInfo[i] = '\0';
+      }
+    }
+  } 
+  //if (fmData.stationInfoPtr != NULL) strncpy(fmData.stationInfo, fmData.stationInfoPtr, 33);
 
   
   secondaryDataPanel.drawString(fmData.stationName, 2, 1, 4);
   secondaryDataPanel.drawString(fmData.programInfo, 2, 30, 4);
 
+  secondaryDataPanel.drawString(fmData.rdsTime, 255, 1, 4);
+  //secondaryDataPanel.drawString(fmData.stationInfo, 2, 60, 4);
+
 
 
 
 
 
   
+  secondaryDataPanel.drawRect(0, 0, 320, 100, TFT_WHITE);
   secondaryDataPanel.pushSprite(0, 101);
 }
 
@@ -721,6 +456,7 @@ void handleEncoder()
       if(mainData.currentRadioMode == 0) mainData.freq = encoderCount * 10;
       else mainData.freq = encoderCount;
       radio.setFrequency(mainData.freq);
+      clearFMScreenData();
     }
   }
   /*if(encoder.getDirection() == RotaryEncoder::Direction::CLOCKWISE) {
@@ -810,6 +546,17 @@ void setFMMode(){
   encoder.setPosition(mainData.freq/10);
   radio.setRdsConfig(3, 3, 3, 3, 3);
   radio.setFifoCount(1);
+  clearFMScreenData();
+}
+
+void VolumeDown(){
+  radio.volumeDown();
+  mainData.volume = radio.getVolume();
+}
+
+void VolumeUp(){
+  radio.volumeUp();
+  mainData.volume = radio.getVolume();
 }
 
 // Instructions
@@ -854,3 +601,109 @@ void showStatusSerial()
   Serial.println("dBuV]");
 
 }
+
+void touch_calibrate()
+{
+  uint16_t calData[5];
+  uint8_t calDataOK = 0;
+
+  // Calibrate
+  tft.fillScreen(TFT_BLACK);
+  tft.setCursor(20, 0);
+  tft.setTextFont(2);
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+
+  tft.println("Touch corners as indicated");
+
+  tft.setTextFont(1);
+  tft.println();
+
+  tft.calibrateTouch(calData, TFT_MAGENTA, TFT_BLACK, 15);
+
+  Serial.println(); Serial.println();
+  Serial.println("// Use this calibration code in setup():");
+  Serial.print("  uint16_t calData[5] = ");
+  Serial.print("{ ");
+
+  for (uint8_t i = 0; i < 5; i++)
+  {
+    Serial.print(calData[i]);
+    if (i < 4) Serial.print(", ");
+  }
+
+  Serial.println(" };");
+  Serial.print("  tft.setTouch(calData);");
+  Serial.println(); Serial.println();
+
+  tft.fillScreen(TFT_BLACK);
+  
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.println("Calibration complete!");
+  tft.println("Calibration code sent to Serial port.");
+
+  delay(4000);
+}
+
+void clearFMScreenData()
+{
+  fmData.rdsAvailable = false;
+  fmData.rdsTimePtr = NULL;
+  fmData.stationNamePtr = NULL;
+  fmData.programInfoPtr = NULL;
+  fmData.stationInfoPtr = NULL;
+
+  fmData.rdsTime[0] = '\0';
+  fmData.stationName[0] = '\0';
+  fmData.programInfo[0] = '\0';
+  fmData.stationInfo[0] = '\0';
+}
+
+
+void handleButtons()
+{
+  static uint32_t scanTime = millis();
+  uint16_t t_x = 9999, t_y = 9999; // To store the touch coordinates
+
+  // Scan keys every 50ms at most
+  if (millis() - scanTime >= 50) {
+    // Pressed will be set true if there is a valid touch on the screen
+    bool pressed = tft.getTouch(&t_x, &t_y);
+    scanTime = millis();
+    for (uint8_t b = 0; b < buttonCount; b++) {
+      if (pressed) {
+        if (buttonList[b]->contains(t_x, t_y)) {
+          buttonList[b]->press(true);
+          buttonList[b]->pressAction();
+        }
+      }
+      else {
+        buttonList[b]->press(false);
+        buttonList[b]->releaseAction();
+      }
+    }
+  }
+}
+
+void buttonVolumeDownPressAction()
+{
+  if(buttonVolumeDown.justPressed()) {
+    VolumeDown();
+    buttonVolumeDown.drawSmoothButton(true);
+    Serial.println("buttonVolumeDown button just pressed");
+  }
+}
+
+void buttonVolumeDownReleaseAction(){ if(buttonVolumeDown.justReleased()) buttonVolumeDown.drawSmoothButton(false);}
+
+void buttonVolumeUpPressAction()
+{
+  if(buttonVolumeUp.justPressed()) {
+    VolumeUp();
+    buttonVolumeUp.drawSmoothButton(true);
+    Serial.println("buttonVolumeUp button just pressed");
+  }
+}
+
+void buttonVolumeUpReleaseAction(){ if(buttonVolumeUp.justReleased()) buttonVolumeUp.drawSmoothButton(false);}
+

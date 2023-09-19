@@ -50,15 +50,15 @@ struct mainScreenData {
 
 struct FMScreenData {
     bool rdsAvailable = false;
-    char *rdsTimePtr;
-    char *stationNamePtr;
-    char *programInfoPtr;
-    char *stationInfoPtr;
+    char *rdsTimePtr = NULL;
+    char *stationNamePtr = NULL;
+    char *programInfoPtr = NULL;
+    char *stationInfoPtr = NULL;
 
-    char rdsTime[25];
-    char stationName[9];
-    char programInfo[65];
-    char stationInfo[33];
+    char rdsTime[25] = "\0";
+    char stationName[9] = "\0";
+    char programInfo[65] = "\0";
+    char stationInfo[33] = "\0";
 };
 
 char radioModes[][4] = {"FM ", "AM ", "USB", "LSB"};
@@ -70,15 +70,30 @@ void loop();
 void setupRadio();
 void handleRadio();
 void setFMMode();
+void VolumeDown();
+void VolumeUp();
 int getStrength(uint8_t rssi);
 
 void setupScreen();
 void handleScreen();
+void touch_calibrate();
 void drawMainDataPanel();
 void drawSecondaryDataPanelFM();
+
+void initButtons();
+void handleButtons();
+
+void buttonVolumeDownPressAction();
+void buttonVolumeDownReleaseAction();
+void buttonVolumeUpPressAction();
+void buttonVolumeUpReleaseAction();
+
+
 
 void handleEncoder();
 void showHelp();
 void showStatusSerial();
+
+void clearFMScreenData();
 
 #endif
